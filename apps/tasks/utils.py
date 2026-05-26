@@ -58,8 +58,6 @@ def handle_task_error(
     if exception:
         error_message = error_message or f"Task execution failed: {str(exception)}"
 
-    logger.error(error_message)
-
     # If we don't have instances but have IDs, try to get them
     if not task_instance and task_id:
         try:
@@ -68,6 +66,16 @@ def handle_task_error(
             task_instance = Task.objects.get(id=task_id)
         except Exception:
             logger.error(f"Failed to get task instance for task_id: {task_id}")
+
+    # Log at WARNING if the task still has retry attempts remaining; ERROR on final failure.
+    # Use attempts < max_attempts as the predicate because task_instance.status has not yet
+    # been set to "failed" at this point (that happens in the transaction block below), so
+    # can_retry() — which requires status == "failed" — would incorrectly return False.
+    # When no task_instance is available (no task context), default to ERROR for safety.
+    if task_instance and task_instance.attempts < task_instance.max_attempts:
+        logger.warning(error_message)
+    else:
+        logger.error(error_message)
 
     if not execution_instance and execution_id:
         try:

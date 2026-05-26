@@ -288,6 +288,79 @@ def test_handle_task_error_by_task_id(user):
     assert task.status == "failed"
 
 
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_handle_task_error_logs_warning_when_retriable(user):
+    """handle_task_error logs WARNING (not ERROR) when the task still has retry attempts remaining."""
+    from unittest.mock import patch
+
+    from apps.tasks.models import Task
+    from apps.tasks.utils import handle_task_error
+
+    # attempts=0, max_attempts=3 → still retriable
+    task = Task.objects.create(
+        name="retriable_task",
+        function_name="hello_world",
+        task_data={},
+        created_by=user,
+        status="pending",
+        attempts=0,
+        max_attempts=3,
+    )
+    with patch("apps.tasks.utils.logger") as mock_logger:
+        result = handle_task_error(task_instance=task, error_message="transient failure")
+
+    assert result["status"] == "error"
+    mock_logger.warning.assert_called_once_with("transient failure")
+    # The main error message must NOT be logged at ERROR level
+    error_calls = [str(call) for call in mock_logger.error.call_args_list]
+    assert not any("transient failure" in c for c in error_calls)
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_handle_task_error_logs_error_when_exhausted(user):
+    """handle_task_error logs ERROR when the task has exhausted all retry attempts."""
+    from unittest.mock import patch
+
+    from apps.tasks.models import Task
+    from apps.tasks.utils import handle_task_error
+
+    # attempts=2, max_attempts=3 → after increment will equal max_attempts (exhausted)
+    task = Task.objects.create(
+        name="exhausted_task",
+        function_name="hello_world",
+        task_data={},
+        created_by=user,
+        status="pending",
+        attempts=2,
+        max_attempts=3,
+    )
+    with patch("apps.tasks.utils.logger") as mock_logger:
+        result = handle_task_error(task_instance=task, error_message="final failure")
+
+    assert result["status"] == "error"
+    mock_logger.error.assert_any_call("final failure")
+    # warning must NOT be called with the main error message
+    warning_calls = [str(call) for call in mock_logger.warning.call_args_list]
+    assert not any("final failure" in c for c in warning_calls)
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_handle_task_error_logs_error_when_no_task_instance():
+    """handle_task_error defaults to ERROR when there is no task context (safety fallback)."""
+    from unittest.mock import patch
+
+    from apps.tasks.utils import handle_task_error
+
+    with patch("apps.tasks.utils.logger") as mock_logger:
+        result = handle_task_error(error_message="no context error")
+
+    assert result["status"] == "error"
+    mock_logger.error.assert_any_call("no context error")
+
+
 # ---------------------------------------------------------------------------
 # update_task_status
 # ---------------------------------------------------------------------------

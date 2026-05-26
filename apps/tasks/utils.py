@@ -67,16 +67,6 @@ def handle_task_error(
         except Exception:
             logger.error(f"Failed to get task instance for task_id: {task_id}")
 
-    # Log at WARNING if the task still has retry attempts remaining; ERROR on final failure.
-    # Use attempts < max_attempts as the predicate because task_instance.status has not yet
-    # been set to "failed" at this point (that happens in the transaction block below), so
-    # can_retry() — which requires status == "failed" — would incorrectly return False.
-    # When no task_instance is available (no task context), default to ERROR for safety.
-    if task_instance and task_instance.attempts < task_instance.max_attempts:
-        logger.warning(error_message)
-    else:
-        logger.error(error_message)
-
     if not execution_instance and execution_id:
         try:
             from .models import TaskExecution
@@ -118,6 +108,16 @@ def handle_task_error(
 
     except Exception as save_error:
         logger.error(f"Failed to update task status after error: {save_error}")
+
+    # Log at WARNING if the task can still be retried; ERROR only on final failure.
+    # Deferred to after the transaction so that:
+    #   1. task_instance.status is "failed" — required by can_retry().
+    #   2. task_instance.attempts reflects any pending-state increment performed above.
+    # When no task_instance is available (no task context), default to ERROR for safety.
+    if task_instance and task_instance.can_retry():
+        logger.warning(error_message)
+    else:
+        logger.error(error_message)
 
     return create_task_result("error", error=error_message)
 

@@ -18,6 +18,8 @@ from django.utils import timezone
 
 logger = logging.getLogger(__name__)
 
+STUCK_TASK_TIMEOUT_SECONDS: int = django_settings.TASK_TIMEOUT
+
 
 def _inject_dispatch_timestamps(function_name: str, task_data: dict) -> dict:
     """
@@ -210,7 +212,7 @@ class UnifiedTaskScheduler:
 
             now = timezone.now()
             stuck_to_fail = Task.objects.filter(
-                status="running", started_at__lt=now - timedelta(seconds=django_settings.TASK_TIMEOUT)
+                status="running", started_at__lt=now - timedelta(seconds=STUCK_TASK_TIMEOUT_SECONDS)
             )
             if stuck_to_fail:
                 ids = [t.id for t in stuck_to_fail]

@@ -109,11 +109,8 @@ def handle_task_error(
     except Exception as save_error:
         logger.error(f"Failed to update task status after error: {save_error}")
 
-    # Log at WARNING if the task can still be retried; ERROR only on final failure.
-    # Deferred to after the transaction so that:
-    #   1. task_instance.status is "failed" — required by can_retry().
-    #   2. task_instance.attempts reflects any pending-state increment performed above.
-    # When no task_instance is available (no task context), default to ERROR for safety.
+    # Deferred past the transaction so status=="failed" and attempts are incremented before can_retry() is called.
+    # Defaults to ERROR when no task context is available.
     if task_instance and task_instance.can_retry():
         logger.warning(error_message)
     else:

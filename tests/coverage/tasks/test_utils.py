@@ -171,8 +171,6 @@ def test_serialize_args_empty_dict():
 # ---------------------------------------------------------------------------
 @pytest.mark.unit
 def test_log_task_execution_info():
-    from unittest.mock import patch
-
     from apps.tasks.utils import log_task_execution
 
     with patch("apps.tasks.utils.logger") as mock_logger:
@@ -184,8 +182,6 @@ def test_log_task_execution_info():
 
 @pytest.mark.unit
 def test_log_task_execution_error_level():
-    from unittest.mock import patch
-
     from apps.tasks.utils import log_task_execution
 
     with patch("apps.tasks.utils.logger") as mock_logger:
@@ -197,8 +193,6 @@ def test_log_task_execution_error_level():
 
 @pytest.mark.unit
 def test_log_task_execution_no_details():
-    from unittest.mock import patch
-
     from apps.tasks.utils import log_task_execution
 
     with patch("apps.tasks.utils.logger") as mock_logger:
@@ -292,8 +286,6 @@ def test_handle_task_error_by_task_id(user):
 @pytest.mark.django_db
 def test_handle_task_error_logs_warning_when_retriable(user):
     """handle_task_error logs WARNING (not ERROR) when the task still has retry attempts remaining."""
-    from unittest.mock import patch
-
     from apps.tasks.models import Task
     from apps.tasks.utils import handle_task_error
 
@@ -321,8 +313,6 @@ def test_handle_task_error_logs_warning_when_retriable(user):
 @pytest.mark.django_db
 def test_handle_task_error_logs_error_when_exhausted(user):
     """handle_task_error logs ERROR when the task has exhausted all retry attempts."""
-    from unittest.mock import patch
-
     from apps.tasks.models import Task
     from apps.tasks.utils import handle_task_error
 
@@ -347,11 +337,8 @@ def test_handle_task_error_logs_error_when_exhausted(user):
 
 
 @pytest.mark.unit
-@pytest.mark.django_db
 def test_handle_task_error_logs_error_when_no_task_instance():
     """handle_task_error defaults to ERROR when there is no task context (safety fallback)."""
-    from unittest.mock import patch
-
     from apps.tasks.utils import handle_task_error
 
     with patch("apps.tasks.utils.logger") as mock_logger:

@@ -440,3 +440,4 @@ This project is licensed under the Apache License - see the [LICENSE](LICENSE) f
 - **Documentation**: Check the [CLAUDE.md](CLAUDE.md) file for detailed development guidance
 - **Issues**: Report bugs and feature requests via GitHub issues
 - **API Documentation**: Interactive docs available at `/api/docs/` when running
+

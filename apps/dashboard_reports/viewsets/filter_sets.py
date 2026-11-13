@@ -6,14 +6,14 @@ from django.db import IntegrityError, transaction
 from django.db.models import QuerySet
 from drf_spectacular.utils import extend_schema, extend_schema_view
 from rest_framework import status
-from rest_framework.exceptions import ValidationError
+from rest_framework.exceptions import PermissionDenied, ValidationError
 from rest_framework.mixins import CreateModelMixin, DestroyModelMixin, ListModelMixin, UpdateModelMixin
-from rest_framework.permissions import IsAuthenticated
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.viewsets import GenericViewSet
 
 from apps.dashboard_reports.models import FilterSet
+from apps.dashboard_reports.permissions import IsDashboardEditor, user_can_save_report
 from apps.dashboard_reports.serializers import FilterSetSerializer
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,7 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
     """
 
     versioning_class = None  # Disable versioning for this viewset
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsDashboardEditor]
     serializer_class = FilterSetSerializer
     pagination_class = DefaultPaginator
 
@@ -81,8 +81,19 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
             queryset = queryset.exclude(pk=exclude_pk)
         queryset.update(is_default=False)
 
+    def _ensure_can_save(self, filters) -> None:
+        """Reject a report whose selected organizations are outside the caller's edit scope."""
+        if not user_can_save_report(self.request.user, filters):
+            raise PermissionDenied("You need change permission on the selected organizations to save reports.")
+
+    def _ensure_can_delete(self, filters) -> None:
+        """Reject deletion when the report covers organizations the caller cannot edit."""
+        if not user_can_save_report(self.request.user, filters):
+            raise PermissionDenied("You need change permission on the selected organizations to delete reports.")
+
     def perform_create(self, serializer: FilterSetSerializer) -> None:
         """Create a filter set, clearing any existing default if the new one is marked default."""
+        self._ensure_can_save(serializer.validated_data.get("filters"))
         try:
             with transaction.atomic():
                 if serializer.validated_data.get("is_default", False):
@@ -93,6 +104,8 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
 
     def perform_update(self, serializer: FilterSetSerializer) -> None:
         """Update a filter set, clearing any existing default if the new one is marked default."""
+        filters = serializer.validated_data.get("filters", serializer.instance.filters)
+        self._ensure_can_save(filters)
         try:
             with transaction.atomic():
                 if serializer.validated_data.get("is_default", False):
@@ -110,6 +123,7 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def perform_destroy(self, instance: FilterSet) -> None:
-        """Delete the filter set instance after logging the action."""
+        """Delete the filter set only when the caller can edit every organization it covers."""
+        self._ensure_can_delete(instance.filters)
         logger.info(f"Deleting filter set with id {instance.id} and name {instance.name}")
         instance.delete()

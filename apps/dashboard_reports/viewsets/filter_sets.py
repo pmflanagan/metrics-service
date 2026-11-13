@@ -86,6 +86,11 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
         if not user_can_save_report(self.request.user, filters):
             raise PermissionDenied("You need change permission on the selected organizations to save reports.")
 
+    def _ensure_can_delete(self, filters) -> None:
+        """Reject deletion when the report covers organizations the caller cannot edit."""
+        if not user_can_save_report(self.request.user, filters):
+            raise PermissionDenied("You need change permission on the selected organizations to delete reports.")
+
     def perform_create(self, serializer: FilterSetSerializer) -> None:
         """Create a filter set, clearing any existing default if the new one is marked default."""
         self._ensure_can_save(serializer.validated_data.get("filters"))
@@ -118,6 +123,7 @@ class FilterSetsViewSet(ListModelMixin, CreateModelMixin, UpdateModelMixin, Dest
         return Response(status=status.HTTP_204_NO_CONTENT)
 
     def perform_destroy(self, instance: FilterSet) -> None:
-        """Delete the filter set instance after logging the action."""
+        """Delete the filter set only when the caller can edit every organization it covers."""
+        self._ensure_can_delete(instance.filters)
         logger.info(f"Deleting filter set with id {instance.id} and name {instance.name}")
         instance.delete()

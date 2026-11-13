@@ -546,6 +546,55 @@ class TestFilterSetsDeleteEndpoint(APITestCase):
 
 
 # =============================================================================
+# DELETE /filter-sets/{id} — organization edit scope
+# =============================================================================
+
+
+@pytest.mark.unit
+class TestFilterSetsDeleteScope(APITestCase):
+    """Deleting a saved report must require edit access to every org it covers."""
+
+    def setUp(self) -> None:
+        self.user = _create_user("org_editor", superuser=False)
+        self.client.force_authenticate(user=self.user)
+
+    def tearDown(self) -> None:
+        FilterSet.objects.all().delete()
+        User.objects.all().delete()
+
+    def _delete(self, filters, edit_ids, view_ids):
+        filter_set = _create_filter_set(self.user, "Scoped Report", filters=filters)
+        url = reverse("v1:filter_sets-detail", kwargs={"pk": filter_set.pk})
+        with (
+            patch("apps.dashboard_reports.permissions.dashboard_edit_org_ids", return_value=edit_ids),
+            patch("apps.dashboard_reports.permissions.permitted_awx_edit_org_ids", return_value=edit_ids),
+            patch("apps.dashboard_reports.permissions.permitted_awx_view_org_ids", return_value=view_ids),
+        ):
+            response = self.client.delete(url)
+        return response, filter_set
+
+    def test_delete_view_only_org_report_forbidden(self) -> None:
+        response, filter_set = self._delete({"organization": [1]}, edit_ids={2}, view_ids={1, 2})
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert FilterSet.objects.filter(pk=filter_set.pk).exists()
+
+    def test_delete_editable_org_report_allowed(self) -> None:
+        response, filter_set = self._delete({"organization": [2]}, edit_ids={2}, view_ids={1, 2})
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert not FilterSet.objects.filter(pk=filter_set.pk).exists()
+
+    def test_delete_no_org_filter_forbidden_when_any_visible_org_is_view_only(self) -> None:
+        response, filter_set = self._delete({"period": ["last_7_days"]}, edit_ids={2}, view_ids={1, 2})
+        assert response.status_code == status.HTTP_403_FORBIDDEN
+        assert FilterSet.objects.filter(pk=filter_set.pk).exists()
+
+    def test_delete_no_org_filter_allowed_when_all_visible_orgs_are_editable(self) -> None:
+        response, filter_set = self._delete({"period": ["last_7_days"]}, edit_ids={1, 2}, view_ids={1, 2})
+        assert response.status_code == status.HTTP_204_NO_CONTENT
+        assert not FilterSet.objects.filter(pk=filter_set.pk).exists()
+
+
+# =============================================================================
 # User isolation (end-to-end multi-user scenario)
 # =============================================================================
 

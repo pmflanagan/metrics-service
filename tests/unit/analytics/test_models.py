@@ -1,8 +1,12 @@
 """Tests for analytics storage models."""
 
 from datetime import UTC, datetime
+from unittest.mock import patch
 
 import pytest
+from django.db import connection
+from django.db.models import QuerySet
+from django.test.utils import CaptureQueriesContext
 
 from apps.analytics.models import AnalyticsPayload, APIUsageCounter
 from tests.test_utils import _times
@@ -87,3 +91,63 @@ def test_api_usage_counter_stores_only_aggregate_fields():
     field_names = {field.name for field in APIUsageCounter._meta.get_fields()}
 
     assert field_names == {"id", "usage_date", "endpoint_name", "status_class", "request_count"}
+
+
+def test_api_usage_counter_first_request_creates_row_with_count_one():
+    usage_date = datetime(2026, 8, 17, tzinfo=UTC).date()
+
+    APIUsageCounter.record_request(usage_date, "analytics:v1:root", 2)
+
+    rows = APIUsageCounter.objects.filter(
+        usage_date=usage_date,
+        endpoint_name="analytics:v1:root",
+        status_class=2,
+    )
+    assert rows.count() == 1
+    assert rows.get().request_count == 1
+
+
+def test_api_usage_counter_steady_state_increment_uses_single_query():
+    usage_date = datetime(2026, 8, 17, tzinfo=UTC).date()
+    counter = APIUsageCounter.objects.create(
+        usage_date=usage_date,
+        endpoint_name="analytics:v1:root",
+        status_class=2,
+        request_count=41,
+    )
+
+    with CaptureQueriesContext(connection) as captured:
+        APIUsageCounter.record_request(usage_date, "analytics:v1:root", 2)
+
+    assert len(captured.captured_queries) == 1
+    assert captured.captured_queries[0]["sql"].strip().upper().startswith("UPDATE")
+    counter.refresh_from_db()
+    assert counter.request_count == 42
+
+
+def test_api_usage_counter_increments_when_get_or_create_loses_race():
+    usage_date = datetime(2026, 8, 17, tzinfo=UTC).date()
+    counter = APIUsageCounter.objects.create(
+        usage_date=usage_date,
+        endpoint_name="analytics:v1:root",
+        status_class=2,
+        request_count=7,
+    )
+    real_update = QuerySet.update
+    update_calls = []
+
+    def fake_update(self, **kwargs):
+        update_calls.append(kwargs)
+        if len(update_calls) == 1:
+            # Simulate the row being invisible to our UPDATE: a concurrent writer inserts it
+            # between our UPDATE and the get_or_create fallback.
+            return 0
+        return real_update(self, **kwargs)
+
+    with patch.object(QuerySet, "update", fake_update):
+        APIUsageCounter.record_request(usage_date, "analytics:v1:root", 2)
+
+    assert len(update_calls) == 2
+    assert APIUsageCounter.objects.filter(usage_date=usage_date).count() == 1
+    counter.refresh_from_db()
+    assert counter.request_count == 8

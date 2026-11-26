@@ -108,16 +108,31 @@ class APIUsageCounter(models.Model):
 
     @classmethod
     def record_request(cls, usage_date, endpoint_name: str, status_class: int) -> None:
-        """Atomically increment one daily endpoint/status counter."""
-        row, _ = cls.objects.get_or_create(
+        """Atomically increment one daily endpoint/status counter.
+
+        Steady state is a single ``UPDATE``: the row already exists, so incrementing it in
+        place is one round trip instead of the two a ``get_or_create`` + ``update`` costs.
+        Only the first request for a given date/endpoint/status class (or a race where the
+        row is created between our ``UPDATE`` and ``get_or_create``) needs the extra work.
+        """
+        updated = cls.objects.filter(
             usage_date=usage_date,
             endpoint_name=endpoint_name,
             status_class=status_class,
-            defaults={"request_count": 0},
+        ).update(request_count=F("request_count") + 1)
+        if updated:
+            return
+
+        # Row does not exist yet: create it with the first request already counted.
+        row, created = cls.objects.get_or_create(
+            usage_date=usage_date,
+            endpoint_name=endpoint_name,
+            status_class=status_class,
+            defaults={"request_count": 1},
         )
-        cls.objects.filter(pk=row.pk).update(
-            request_count=F("request_count") + 1,
-        )
+        if not created:
+            # Lost a race: another writer inserted the row after our UPDATE missed it.
+            cls.objects.filter(pk=row.pk).update(request_count=F("request_count") + 1)
 
     @classmethod
     def empty_daily_summary(cls, available: bool = True) -> dict:

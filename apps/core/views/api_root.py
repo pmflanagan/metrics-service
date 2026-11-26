@@ -1,8 +1,16 @@
+from contextlib import suppress
+from weakref import WeakKeyDictionary
+
 from ansible_base.lib.utils.views.ansible_base import AnsibleBaseView
 from django.contrib.admindocs.views import simplify_regex
 from django.urls import URLPattern, URLResolver, get_resolver
 from rest_framework.permissions import AllowAny
 from rest_framework.response import Response
+
+# Cache the extracted (clean_path, pattern_name) pairs per URLResolver instance.
+# A new resolver (e.g. after django.urls.clear_url_caches()) gets a fresh entry,
+# and the weak key ensures stale resolvers are garbage collected.
+_EXTRACTED_PATTERNS_CACHE: WeakKeyDictionary[URLResolver, tuple[tuple[str, str | None], ...]] = WeakKeyDictionary()
 
 
 class APIRootView(AnsibleBaseView):
@@ -38,8 +46,20 @@ class APIRootView(AnsibleBaseView):
         # Get the current view's URL name to exclude it from results
         current_url_name = getattr(request.resolver_match, "url_name", None)
 
-        # Collect all patterns in traversal order (like show_urls --unsorted)
-        all_patterns = list(self._extract_patterns(resolver.url_patterns, ""))
+        # Collect all patterns in traversal order (like show_urls --unsorted).
+        # The extraction is expensive (regex simplification over the whole URL
+        # tree), so cache it per resolver instance.
+        try:
+            all_patterns = _EXTRACTED_PATTERNS_CACHE.get(resolver)
+        except TypeError:
+            # Resolver is not weak-referenceable (e.g. a test double): skip caching.
+            all_patterns = None
+
+        if all_patterns is None:
+            all_patterns = tuple(self._extract_patterns(resolver.url_patterns, ""))
+            # Non-weak-referenceable resolver: compute per request, never raise.
+            with suppress(TypeError):
+                _EXTRACTED_PATTERNS_CACHE[resolver] = all_patterns
 
         # Track seen paths - first occurrence wins (matches Django routing)
         seen_paths = set()

@@ -47,6 +47,18 @@ def test_json_size_bytes_normalizes_before_encoding():
     assert json_size_bytes({"value": Decimal("1.0")}) == len(b'{"value": "1.0"}')
 
 
+def test_json_size_bytes_skips_normalization_for_already_normalized_values(monkeypatch):
+    value = {"value": "1.0", "nested": [1, 2, {"decimal": "2.5"}]}
+    expected = json_size_bytes(value)
+
+    def fail_to_jsonable(_value):
+        raise AssertionError("to_jsonable must not be called when normalized=True")
+
+    monkeypatch.setattr("apps.core.json_utils.to_jsonable", fail_to_jsonable)
+
+    assert json_size_bytes(value, normalized=True) == expected
+
+
 def test_to_jsonable_keeps_integer_columns_with_nulls_as_integers():
     frame = pd.DataFrame(
         {

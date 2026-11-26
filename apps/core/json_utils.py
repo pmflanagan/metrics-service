@@ -106,6 +106,14 @@ def to_jsonable(value: Any) -> Any:
     return _to_jsonable_complex(value)
 
 
-def json_size_bytes(value: Any) -> int:
-    """Return the UTF-8 JSON size after normalizing a value."""
-    return len(json.dumps(to_jsonable(value)).encode("utf-8"))
+def json_size_bytes(value: Any, *, normalized: bool = False) -> int:
+    """Return the UTF-8 JSON size of a value.
+
+    By default the value is normalized with :func:`to_jsonable` before encoding, which keeps
+    callers working with raw collector output correct. Pass ``normalized=True`` when the value
+    has already been normalized (for example a value just read back from a JSONField) to skip
+    the redundant conversion.
+    """
+    if not normalized:
+        value = to_jsonable(value)
+    return len(json.dumps(value).encode("utf-8"))

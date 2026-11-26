@@ -136,7 +136,7 @@ def daily_anonymize_and_prepare(**kwargs) -> dict[str, Any]:
 
             # Update daily summary status
             daily_summary.status = "anonymized"
-            daily_summary.save()
+            daily_summary.save(update_fields=["status", "modified"])
 
             Task.objects.create(
                 name=f"send_to_segment_{summary_date}",

@@ -411,6 +411,11 @@ class HourlyMetricsCollection(CommonModel, AuditableModel):
         """
         Auto-calculate data size on save.
 
+        Normalization and size calculation are skipped when the save explicitly targets other
+        fields, so status-only updates do not rewrite the JSONB column or pay the conversion
+        cost. When ``raw_data`` is written, ``data_size_bytes`` is added to ``update_fields`` so
+        the stored size stays accurate.
+
         Args:
             *args: Positional arguments
             *kwargs: Keyword arguments
@@ -418,8 +423,16 @@ class HourlyMetricsCollection(CommonModel, AuditableModel):
         Returns:
             None
         """
-        self.raw_data = to_jsonable(self.raw_data)
-        self.data_size_bytes = json_size_bytes(self.raw_data)
+        update_fields = kwargs.get("update_fields")
+        writes_raw_data = update_fields is None or "raw_data" in update_fields
+
+        if writes_raw_data:
+            self.raw_data = to_jsonable(self.raw_data)
+            self.data_size_bytes = json_size_bytes(self.raw_data, normalized=True)
+
+            if update_fields is not None and "data_size_bytes" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "data_size_bytes"]
+
         super().save(*args, **kwargs)
 
 
@@ -601,6 +614,11 @@ class AnonymizedMetricsPayload(CommonModel, AuditableModel):
         """
         Auto-calculate payload size on save.
 
+        Normalization and size calculation are skipped when the save explicitly targets other
+        fields, so status-only updates do not rewrite the JSONB column or pay the conversion
+        cost. When ``anonymized_data`` is written, ``payload_size_bytes`` is added to
+        ``update_fields`` so the stored size stays accurate.
+
         Args:
             *args: Positional arguments
             *kwargs: Keyword arguments
@@ -608,6 +626,14 @@ class AnonymizedMetricsPayload(CommonModel, AuditableModel):
         Returns:
             None
         """
-        self.anonymized_data = to_jsonable(self.anonymized_data)
-        self.payload_size_bytes = json_size_bytes(self.anonymized_data)
+        update_fields = kwargs.get("update_fields")
+        writes_anonymized_data = update_fields is None or "anonymized_data" in update_fields
+
+        if writes_anonymized_data:
+            self.anonymized_data = to_jsonable(self.anonymized_data)
+            self.payload_size_bytes = json_size_bytes(self.anonymized_data, normalized=True)
+
+            if update_fields is not None and "payload_size_bytes" not in update_fields:
+                kwargs["update_fields"] = [*update_fields, "payload_size_bytes"]
+
         super().save(*args, **kwargs)

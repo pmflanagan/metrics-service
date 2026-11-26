@@ -40,10 +40,14 @@ def _get_payloads_to_send(payload_id: int | None, max_payloads: int, stale_thres
     if payload_id:
         return AnonymizedMetricsPayload.objects.filter(
             Q(id=payload_id) & (Q(status__in=["pending", "retry"]) | Q(status="sending", modified__lt=stale_threshold))
+        ).select_related("daily_summary")
+    return (
+        AnonymizedMetricsPayload.objects.filter(
+            Q(status__in=["pending", "retry", "unavailable"]) | Q(status="sending", modified__lt=stale_threshold)
         )
-    return AnonymizedMetricsPayload.objects.filter(
-        Q(status__in=["pending", "retry", "unavailable"]) | Q(status="sending", modified__lt=stale_threshold)
-    ).order_by("created")[:max_payloads]
+        .select_related("daily_summary")
+        .order_by("created")[:max_payloads]
+    )
 
 
 def _handle_successful_send(payload, results: dict) -> None:
@@ -57,14 +61,14 @@ def _handle_successful_send(payload, results: dict) -> None:
     payload.status = "sent"
     payload.sent_at = timezone.now()
     payload.error_message = ""
-    payload.save()
+    payload.save(update_fields=["status", "sent_at", "error_message", "modified"])
     results["sent"] += 1
 
     # Update daily summary status separately (don't let this failure affect payload)
     try:
         if payload.daily_summary:
             payload.daily_summary.status = "sent"
-            payload.daily_summary.save()
+            payload.daily_summary.save(update_fields=["status", "modified"])
     except Exception as summary_error:
         logger.warning(f"Failed to update daily_summary for payload {payload.id}: {summary_error}")
 
@@ -98,7 +102,7 @@ def _handle_failed_send(payload, segment_result: dict, results: dict) -> None:
         payload.status = "retry"
         logger.warning("Segment send failed, retrying", extra=details)
 
-    payload.save()
+    payload.save(update_fields=["status", "retry_count", "error_message", "modified"])
     results["failed"] += 1
 
 
@@ -115,7 +119,7 @@ def _handle_unavailable_send(payload, segment_result: dict, results: dict) -> No
 
     payload.status = "unavailable"
     payload.error_message = f"Service unavailable: {error_message}"
-    payload.save()
+    payload.save(update_fields=["status", "error_message", "modified"])
     results["skipped"] += 1
 
     logger.info(f"Segment unavailable for payload {payload.id}, skipping: {error_message}")
@@ -139,13 +143,13 @@ def _process_single_payload(payload, results: dict) -> None:
     if payload.status == "retry" and not payload.can_retry():
         payload.status = "failed"
         payload.error_message = "Max retries exceeded"
-        payload.save()
+        payload.save(update_fields=["status", "error_message", "modified"])
         results["skipped"] += 1
         return
 
     # Update status to sending
     payload.status = "sending"
-    payload.save()
+    payload.save(update_fields=["status", "modified"])
 
     try:
         event_name = payload.segment_event_name

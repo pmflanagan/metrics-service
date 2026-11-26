@@ -105,6 +105,10 @@ DATABASES = {
         "OPTIONS": {
             "sslmode": "prefer",
         },
+        # Reuse the primary connection for up to 60 seconds to avoid a new TCP/TLS
+        # handshake per request. Health checks validate reused connections first.
+        "CONN_MAX_AGE": 60,
+        "CONN_HEALTH_CHECKS": True,
     },
     # AWX database for metrics-utility collector integration
     # Override with METRICS_SERVICE_DATABASES__awx__HOST, etc.

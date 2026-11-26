@@ -19,6 +19,9 @@ SECRET_KEY = os.environ.get("METRICS_SERVICE_SECRET_KEY", "test-only-secret-key-
 DATABASES__default__HOST = os.environ.get("METRICS_SERVICE_DATABASES__DEFAULT__HOST", "127.0.0.1")
 DATABASES__default__PASSWORD = os.environ.get("METRICS_SERVICE_DATABASES__DEFAULT__PASSWORD", "metrics_service")
 DATABASES__default__USER = os.environ.get("METRICS_SERVICE_DATABASES__DEFAULT__USER", "metrics_service")
+# Disable persistent connections so pytest can tear down/reuse the test database
+# without lingering sessions holding locks between runs.
+DATABASES__default__CONN_MAX_AGE = 0
 SEGMENT_WRITE_KEY = "test-only-segment-write-key-for-testing-only-purposes"
 
 ANSIBLE_BASE_BYPASS_SUPERUSER_FLAGS = ["is_superuser"]

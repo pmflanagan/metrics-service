@@ -62,6 +62,11 @@ class Task(NamedCommonModel, AuditableModel, StatusTrackingMixin):
         app_label = "tasks"
         ordering = ["id"]
         permissions = [("can_execute_task", "Can execute task")]
+        indexes = [
+            models.Index(fields=["status", "started_at"]),
+            models.Index(fields=["status", "completed_at"]),
+            models.Index(fields=["function_name", "status"]),
+        ]
 
     STATUS_CHOICES = [
         ("pending", "Pending"),
@@ -269,6 +274,10 @@ class TaskExecution(CommonModel, AuditableModel):
     class Meta:
         app_label = "tasks"
         ordering = ["-started_at"]
+        indexes = [
+            models.Index(fields=["task", "status"]),
+            models.Index(fields=["-started_at"]),
+        ]
 
     task = models.ForeignKey(
         Task, on_delete=models.CASCADE, related_name="executions", help_text="The task that was executed"
@@ -502,6 +511,7 @@ class AnonymizedMetricsPayload(CommonModel, AuditableModel):
         indexes = [
             models.Index(fields=["status", "created"]),
             models.Index(fields=["summary_date"]),
+            models.Index(fields=["-modified"]),
         ]
         constraints = [
             models.UniqueConstraint(

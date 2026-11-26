@@ -80,7 +80,8 @@ def test_health_segment_send_ok(anon_client):
 
     # AnonymizedMetricsPayload is imported inside the view function, patch at source
     with patch("apps.tasks.models.AnonymizedMetricsPayload") as mock_model:
-        mock_model.objects.all.return_value.order_by.return_value.first.return_value = mock_payload
+        mock_qs = mock_model.objects.only.return_value.order_by.return_value
+        mock_qs.first.return_value = mock_payload
         response = anon_client.get("/health/")
 
     data = response.json()
@@ -100,7 +101,8 @@ def test_health_segment_send_failed(anon_client):
     mock_payload.modified = tz.now()
 
     with patch("apps.tasks.models.AnonymizedMetricsPayload") as mock_model:
-        mock_model.objects.all.return_value.order_by.return_value.first.return_value = mock_payload
+        mock_qs = mock_model.objects.only.return_value.order_by.return_value
+        mock_qs.first.return_value = mock_payload
         response = anon_client.get("/health/")
 
     data = response.json()
@@ -114,7 +116,8 @@ def test_health_no_payloads_no_segment_check(anon_client):
     from unittest.mock import patch
 
     with patch("apps.tasks.models.AnonymizedMetricsPayload") as mock_model:
-        mock_model.objects.all.return_value.order_by.return_value.first.return_value = None
+        mock_qs = mock_model.objects.only.return_value.order_by.return_value
+        mock_qs.first.return_value = None
         response = anon_client.get("/health/")
 
     data = response.json()

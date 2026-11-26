@@ -36,5 +36,5 @@ from .base import BaseViewSet
 class TeamViewSet(BaseViewSet):
     """CRUD viewset for Team resources with RBAC filtering."""
 
-    queryset = Team.objects.all()
+    queryset = Team.objects.select_related("organization", "created_by", "modified_by", "resource").all()
     serializer_class = TeamSerializer

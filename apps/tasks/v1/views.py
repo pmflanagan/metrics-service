@@ -31,6 +31,7 @@ from datetime import timedelta
 from typing import Any
 
 from ansible_base.rbac.api.permissions import IsSystemAdminOrAuditor
+from django.db.models import Count
 from django.http import HttpRequest
 from django.utils import timezone
 from drf_spectacular.types import OpenApiTypes
@@ -95,6 +96,10 @@ class TaskViewSet(BaseViewSet):
     ordering_fields = ["id", "name", "status", "scheduled_time", "created", "started_at", "completed_at"]
     ordering = ["-id"]
 
+    # Actions whose serialized payload exposes ``executions_count``; these get an
+    # aggregate annotation so serialization does not issue one COUNT query per task.
+    _executions_annotated_actions = frozenset({"list", "retrieve", "running", "pending", "update", "partial_update"})
+
     @property
     def search_fields(self) -> list[str]:
         return self.get_named_model_search_fields(["function_name", "status", "created_by__username"])
@@ -111,6 +116,25 @@ class TaskViewSet(BaseViewSet):
             "completed_at": self.get_datetime_field_filters(),
         }
         return self.build_filterset_fields(self.get_named_model_filterset_fields(extra_fields))
+
+    def get_queryset(self):
+        """Annotate execution counts for actions that serialize ``executions_count``.
+
+        Annotating avoids one COUNT query per task when serializing list/retrieve
+        payloads. The class-level ``queryset`` is kept unannotated so schema
+        inspection and other actions behave exactly as before.
+
+        ``annotate()`` with an aggregate clears ``Meta.ordering``, which would
+        leave custom actions such as ``pending``/``running`` (they do not go
+        through ``filter_queryset()``) with an arbitrary database row order.
+        Re-applying ``order_by("id")`` restores ``Task.Meta.ordering``; DRF's
+        ``OrderingFilter`` on ``list`` still overrides it via ``ordering`` or a
+        query parameter.
+        """
+        queryset = super().get_queryset()
+        if self.action in self._executions_annotated_actions:
+            queryset = queryset.annotate(_executions_count=Count("executions")).order_by("id")
+        return queryset
 
     def get_serializer_class(self):
         """Use appropriate serializer based on action."""
@@ -322,7 +346,7 @@ class TaskViewSet(BaseViewSet):
         if dry_run:
             # Return preview of what would be deleted
             preview = []
-            for task in old_tasks[:10]:
+            for task in old_tasks.only("id", "name", "status", "completed_at")[:10]:
                 preview.append(
                     {
                         "id": task.id,

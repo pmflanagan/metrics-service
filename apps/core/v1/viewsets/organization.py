@@ -27,5 +27,5 @@ class OrganizationViewSet(BaseViewSet):
     # is configured (AAP-74775).
     http_method_names = ["get", "put", "patch", "delete", "head", "options", "trace"]
 
-    queryset = Organization.objects.all()
+    queryset = Organization.objects.select_related("created_by", "modified_by", "resource").all()
     serializer_class = OrganizationSerializer

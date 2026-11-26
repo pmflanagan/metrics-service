@@ -134,6 +134,38 @@ class TestHealthEndpoint:
         assert "last_success_at" in json_response["checks"]["segment_send"]
         assert response.status_code == status.HTTP_200_OK
 
+    @pytest.mark.django_db
+    @patch("apps.core.views.health.close_old_connections")
+    def test_health_check_segment_query_does_not_fetch_anonymized_data(self, mock_close, client):
+        """Test that the segment send check selects only lightweight payload columns."""
+        from datetime import timedelta
+
+        from django.db import connection
+        from django.test.utils import CaptureQueriesContext
+        from django.utils import timezone
+
+        from apps.tasks.models import AnonymizedMetricsPayload
+
+        AnonymizedMetricsPayload.objects.create(
+            summary_date=timezone.now().date() - timedelta(days=1),
+            anonymized_data={"test": "data"},
+            status="sent",
+        )
+
+        with CaptureQueriesContext(connection) as captured:
+            response = client.get("/health/")
+
+        payload_queries = [q["sql"] for q in captured.captured_queries if "tasks_anonymizedmetricspayload" in q["sql"]]
+        assert payload_queries, "Expected the health check to query the anonymized metrics payload table"
+        for sql in payload_queries:
+            assert "anonymized_data" not in sql, f"Health check must not select anonymized_data: {sql}"
+
+        assert response.status_code == status.HTTP_200_OK
+        json_response = response.json()
+        assert json_response["status"] == "good"
+        assert json_response["checks"]["segment_send"]["status"] == "ok"
+        assert json_response["checks"]["segment_send"]["last_success_at"]
+
 
 @pytest.mark.unit
 @pytest.mark.django_db

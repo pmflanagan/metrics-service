@@ -14,7 +14,8 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from django.conf import settings
-from django.db import OperationalError
+from django.db import OperationalError, connection
+from django.test.utils import CaptureQueriesContext
 from django.utils import timezone
 
 from apps.tasks.cron_scheduler import UnifiedTaskScheduler, _inject_dispatch_timestamps
@@ -637,6 +638,40 @@ class TestCleanupStaleAdvisoryLocks:
         passed_names = set(hashtext_call[0][1][0])
         assert passed_names == TASK_LOCKS
 
+    def test_hashtext_lookup_cached_per_instance(self):
+        """The hashtext lookup runs once per instance; pg_locks runs on every call."""
+        scheduler = UnifiedTaskScheduler()
+
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[(999000,)], [], []]
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        with patch("django.db.connection") as mock_conn:
+            mock_conn.cursor.return_value = mock_cursor
+            scheduler._cleanup_stale_advisory_locks()
+            scheduler._cleanup_stale_advisory_locks()
+
+        calls = mock_cursor.execute.call_args_list
+        assert sum(1 for c in calls if "hashtext" in str(c)) == 1
+        assert sum(1 for c in calls if "pg_locks" in str(c)) == 2
+        assert scheduler._lock_ids == [999000]
+
+    def test_fresh_instance_runs_hashtext_lookup_again(self):
+        """Caching is per instance, so a new scheduler re-resolves its lock IDs."""
+        mock_cursor = MagicMock()
+        mock_cursor.fetchall.side_effect = [[(999000,)], [], [(999000,)], []]
+        mock_cursor.__enter__ = MagicMock(return_value=mock_cursor)
+        mock_cursor.__exit__ = MagicMock(return_value=False)
+
+        with patch("django.db.connection") as mock_conn:
+            mock_conn.cursor.return_value = mock_cursor
+            UnifiedTaskScheduler()._cleanup_stale_advisory_locks()
+            UnifiedTaskScheduler()._cleanup_stale_advisory_locks()
+
+        calls = mock_cursor.execute.call_args_list
+        assert sum(1 for c in calls if "hashtext" in str(c)) == 2
+
     def test_handles_db_error_gracefully(self):
         """Database errors in lock cleanup are caught and logged, not raised."""
         scheduler = UnifiedTaskScheduler()
@@ -644,6 +679,74 @@ class TestCleanupStaleAdvisoryLocks:
         with patch("django.db.connection") as mock_conn:
             mock_conn.cursor.side_effect = Exception("connection lost")
             scheduler._cleanup_stale_advisory_locks()
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+class TestSchedulerQueryEfficiency:
+    """Scheduler hot paths must not fetch large or unused Task columns."""
+
+    def test_fail_stuck_tasks_selects_only_ids(self, user):
+        """_fail_stuck_tasks must not load task_data/result_data JSONB payloads."""
+        from apps.tasks.models import Task
+
+        task = Task.objects.create(
+            name="Heavy Stuck Task",
+            function_name="hello_world",
+            task_data={"payload": "x" * 100},
+            created_by=user,
+        )
+        Task.objects.filter(id=task.id).update(
+            status="running",
+            started_at=timezone.now() - timedelta(hours=2),
+        )
+
+        scheduler = UnifiedTaskScheduler()
+        with CaptureQueriesContext(connection) as ctx:
+            scheduler._fail_stuck_tasks()
+
+        task_selects = [
+            q["sql"]
+            for q in ctx.captured_queries
+            if 'FROM "tasks_task"' in q["sql"] and q["sql"].lstrip().upper().startswith("SELECT")
+        ]
+        assert task_selects, "expected an id lookup against tasks_task"
+        for sql in task_selects:
+            assert "task_data" not in sql
+            assert "result_data" not in sql
+
+        task.refresh_from_db()
+        assert task.status == "failed"
+
+    @pytest.mark.parametrize("method_name", ["immediate_tasks", "scheduled_tasks", "recurring_tasks"])
+    def test_task_discovery_querysets_defer_large_columns(self, user, method_name):
+        """Discovery querysets omit result_data, error_message and description."""
+        from apps.tasks.models import Task
+
+        Task.objects.create(name="Immediate", function_name="hello_world", task_data={}, created_by=user)
+        Task.objects.create(
+            name="Scheduled",
+            function_name="hello_world",
+            task_data={},
+            created_by=user,
+            scheduled_time=timezone.now() + timedelta(hours=1),
+        )
+        Task.objects.create(
+            name="Recurring",
+            function_name="hello_world",
+            task_data={},
+            created_by=user,
+            cron_expression="0 * * * *",
+        )
+
+        with CaptureQueriesContext(connection) as ctx:
+            list(getattr(Task, method_name)())
+
+        sql = ctx.captured_queries[-1]["sql"]
+        assert 'FROM "tasks_task"' in sql
+        assert "result_data" not in sql
+        assert "error_message" not in sql
+        assert "description" not in sql
 
 
 @pytest.mark.unit

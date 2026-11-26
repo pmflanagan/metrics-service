@@ -79,6 +79,9 @@ class UnifiedTaskScheduler:
         self._db_not_ready_since = None  # Timestamp when DB first became unready
         self._db_ready_grace_period = timedelta(minutes=10)  # Grace period before escalating to ERROR
 
+        # Cached advisory lock IDs (hashtext of TASK_LOCKS), resolved lazily once per instance
+        self._lock_ids: list[int] | None = None
+
     def _check_db_readiness_and_log(self) -> bool:
         """
         Check DB readiness and log appropriate messages based on grace period.
@@ -310,11 +313,14 @@ class UnifiedTaskScheduler:
         from .models import Task, TaskExecution
 
         now = timezone.now()
-        stuck_to_fail = Task.objects.filter(
-            status="running", started_at__lt=now - timedelta(seconds=STUCK_TASK_TIMEOUT_SECONDS)
+        # Select only IDs so large task_data/result_data JSONB columns are never
+        # fetched from the database just to reconcile stuck tasks.
+        ids = list(
+            Task.objects.filter(
+                status="running", started_at__lt=now - timedelta(seconds=STUCK_TASK_TIMEOUT_SECONDS)
+            ).values_list("id", flat=True)
         )
-        if stuck_to_fail:
-            ids = [t.id for t in stuck_to_fail]
+        if ids:
             error_msg = "Task timed out — worker died before completion"
             with transaction.atomic():
                 TaskExecution.objects.filter(task__id__in=ids, status="running").update(
@@ -357,9 +363,12 @@ class UnifiedTaskScheduler:
         try:
             with connection.cursor() as cursor:
                 # Compute our lock IDs the same way lock.py does:
-                # hashtext(name)::bigint, then Python-style modulo 2**63
-                cursor.execute("SELECT hashtext(name)::bigint FROM unnest(%s::text[]) AS name", [list(TASK_LOCKS)])
-                our_lock_ids = [row[0] % (2**63) for row in cursor.fetchall()]
+                # hashtext(name)::bigint, then Python-style modulo 2**63.
+                # The mapping is stable at runtime, so resolve it only once per
+                # scheduler instance instead of on every periodic tick.
+                if self._lock_ids is None:
+                    cursor.execute("SELECT hashtext(name)::bigint FROM unnest(%s::text[]) AS name", [list(TASK_LOCKS)])
+                    self._lock_ids = [row[0] % (2**63) for row in cursor.fetchall()]
 
                 cursor.execute(
                     """
@@ -373,7 +382,7 @@ class UnifiedTaskScheduler:
                       AND a.state_change < NOW() - interval '1 second' * %s
                       AND ((l.classid::bigint << 32) | (l.objid::bigint & x'ffffffff'::bigint)) = ANY(%s)
                     """,
-                    [STUCK_TASK_TIMEOUT_SECONDS, our_lock_ids],
+                    [STUCK_TASK_TIMEOUT_SECONDS, self._lock_ids],
                 )
                 stale_pids = [row[0] for row in cursor.fetchall()]
 

@@ -249,18 +249,30 @@ class Task(NamedCommonModel, AuditableModel, StatusTrackingMixin):
 
     @classmethod
     def immediate_tasks(cls):
-        """Pending tasks with no scheduled time and no cron expression (run ASAP)."""
-        return cls.objects.filter(cls.non_recurring_filter(), status="pending", scheduled_time__isnull=True)
+        """Pending tasks with no scheduled time and no cron expression (run ASAP).
+
+        Large/unused columns are deferred so the periodic scheduler sync does not
+        fetch result payloads for tasks it only needs to identify and dispatch.
+        """
+        return cls.objects.filter(cls.non_recurring_filter(), status="pending", scheduled_time__isnull=True).defer(
+            "result_data", "error_message", "description"
+        )
 
     @classmethod
     def scheduled_tasks(cls):
         """Pending tasks that have a specific scheduled_time set."""
-        return cls.objects.filter(status="pending", scheduled_time__isnull=False)
+        return cls.objects.filter(status="pending", scheduled_time__isnull=False).defer(
+            "result_data", "error_message", "description"
+        )
 
     @classmethod
     def recurring_tasks(cls):
         """Pending tasks driven by a cron expression."""
-        return cls.objects.filter(status="pending").exclude(cls.non_recurring_filter())
+        return (
+            cls.objects.filter(status="pending")
+            .exclude(cls.non_recurring_filter())
+            .defer("result_data", "error_message", "description")
+        )
 
 
 class TaskExecution(CommonModel, AuditableModel):

@@ -42,6 +42,7 @@ class AnalyticsPayload(CommonModel, AuditableModel):
             models.Index(fields=["collector", "since"]),
             models.Index(fields=["collector", "until"]),
             models.Index(fields=["collector", "started_at"]),
+            models.Index(fields=["collector", "finished_at"]),
         ]
         verbose_name = "Analytics Payload"
         verbose_name_plural = "Analytics Payloads"

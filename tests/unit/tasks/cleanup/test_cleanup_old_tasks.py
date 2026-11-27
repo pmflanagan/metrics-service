@@ -415,3 +415,48 @@ class TestCleanupOldTasks:
 
         # Valid cron task should still exist
         assert Task.objects.filter(id=task_with_valid_cron.id).exists()
+
+    def test_cleanup_does_not_create_activitystream_entries(self, old_completed_task):
+        """Retention purge of Task/TaskExecution rows must not add ActivityStream entries."""
+        from ansible_base.activitystream.models import Entry
+
+        from apps.tasks.models import TaskExecution
+
+        TaskExecution.objects.create(task=old_completed_task, status="completed")
+
+        entries_before = Entry.objects.count()
+
+        result = cleanup_old_tasks(days_old=30, dry_run=False, include_executions=True)
+
+        assert result["tasks_deleted"] == 1
+        assert result["executions_deleted"] == 1
+        assert Entry.objects.count() == entries_before
+
+    def test_cleanup_cascade_execution_delete_creates_no_activitystream_entries(self, old_completed_task):
+        """Cascade-deleted TaskExecution rows must not add ActivityStream entries either."""
+        from ansible_base.activitystream.models import Entry
+
+        from apps.tasks.models import TaskExecution
+
+        TaskExecution.objects.create(task=old_completed_task, status="completed")
+        TaskExecution.objects.create(task=old_completed_task, status="failed")
+
+        entries_before = Entry.objects.count()
+
+        result = cleanup_old_tasks(days_old=30, dry_run=False, include_executions=False)
+
+        assert result["tasks_deleted"] == 1
+        assert result["executions_deleted"] == 2
+        assert Entry.objects.count() == entries_before
+
+    def test_normal_task_creation_still_creates_activitystream_entry(self, user):
+        """Auditing remains intact for user/task models."""
+        from ansible_base.activitystream.models import Entry
+
+        from apps.tasks.models import Task
+
+        entries_before = Entry.objects.count()
+
+        Task.objects.create(name="Audited Task", function_name="hello_world", task_data={}, created_by=user)
+
+        assert Entry.objects.count() == entries_before + 1

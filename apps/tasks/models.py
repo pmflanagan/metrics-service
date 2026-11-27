@@ -331,7 +331,7 @@ class TaskExecution(CommonModel, AuditableModel):
         super().save(*args, **kwargs)
 
 
-class HourlyMetricsCollection(CommonModel, AuditableModel):
+class HourlyMetricsCollection(CommonModel):
     """
     Store raw hourly metrics collection data.
 
@@ -441,7 +441,7 @@ class HourlyMetricsCollection(CommonModel, AuditableModel):
         super().save(*args, **kwargs)
 
 
-class DailyMetricsSummary(CommonModel, AuditableModel):
+class DailyMetricsSummary(CommonModel):
     """
     Store aggregated daily metrics with references to hourly snapshots.
 
@@ -515,7 +515,7 @@ class DailyMetricsSummary(CommonModel, AuditableModel):
         return f"Daily Summary - {self.summary_date} ({self.get_status_display()})"
 
 
-class AnonymizedMetricsPayload(CommonModel, AuditableModel):
+class AnonymizedMetricsPayload(CommonModel):
     """
     Store anonymized metrics payloads before sending to Segment.
 

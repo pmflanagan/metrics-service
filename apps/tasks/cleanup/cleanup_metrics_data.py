@@ -9,6 +9,7 @@ Retention policies:
 - API usage counters: same analytics retention, keyed on usage_date
 """
 
+import contextlib
 import logging
 from datetime import timedelta
 from typing import Any
@@ -18,6 +19,11 @@ from django.utils import timezone
 
 from ..retention import get_controller_retention_days
 from ..utils import create_task_result, ignore_database_override, log_task_execution
+
+try:
+    from ansible_base.activitystream.signals import no_activity_stream
+except ImportError:  # pragma: no cover - DAB unavailable in minimal test setups
+    no_activity_stream = contextlib.nullcontext
 
 logger = logging.getLogger(__name__)
 
@@ -33,7 +39,8 @@ def _delete_old_rows(queryset: QuerySet, dry_run: bool, label: str | None = None
     found = queryset.count()
     if dry_run or found == 0:
         return {"found": found, "deleted": 0}
-    deleted_total, deletion_info = queryset.delete()
+    with no_activity_stream():
+        deleted_total, deletion_info = queryset.delete()
     deleted = deletion_info.get(label, 0) if label else deleted_total
     return {"found": found, "deleted": deleted}
 

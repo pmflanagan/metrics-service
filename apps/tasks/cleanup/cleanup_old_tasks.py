@@ -6,6 +6,7 @@ the specified number of days. This helps maintain database performance
 and prevents unlimited growth of task history.
 """
 
+import contextlib
 import logging
 from datetime import timedelta
 from typing import Any
@@ -14,6 +15,11 @@ from django.db.models import Q
 from django.utils import timezone
 
 from ..utils import create_task_result, log_task_execution
+
+try:
+    from ansible_base.activitystream.signals import no_activity_stream
+except ImportError:  # pragma: no cover - DAB unavailable in minimal test setups
+    no_activity_stream = contextlib.nullcontext
 
 logger = logging.getLogger(__name__)
 
@@ -99,18 +105,21 @@ def cleanup_old_tasks(**kwargs) -> dict[str, Any]:
     if not dry_run and task_count > 0:
         log_task_execution("cleanup_old_tasks", "processing", f"Deleting {task_count} old tasks")
 
-        if include_executions:
-            # Delete executions first (foreign key constraint)
-            _, deletion_info = TaskExecution.objects.filter(task__in=old_tasks).delete()
-            deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
+        # Retention purges are not user activity: skip ActivityStream entries so bulk
+        # deletes do not stringify and insert an Entry per deleted row.
+        with no_activity_stream():
+            if include_executions:
+                # Delete executions first (foreign key constraint)
+                _, deletion_info = TaskExecution.objects.filter(task__in=old_tasks).delete()
+                deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
 
-        # Delete the tasks
-        _, deletion_info = old_tasks.delete()
-        deleted_tasks = deletion_info.get("tasks.Task", 0)
+            # Delete the tasks
+            _, deletion_info = old_tasks.delete()
+            deleted_tasks = deletion_info.get("tasks.Task", 0)
 
-        # If we didn't manually delete executions, they were cascade deleted
-        if not include_executions:
-            deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
+            # If we didn't manually delete executions, they were cascade deleted
+            if not include_executions:
+                deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
 
         message = f"Deleted {deleted_tasks} tasks and {deleted_executions} executions"
         if preserve_recurring:

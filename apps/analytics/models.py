@@ -5,7 +5,6 @@ from django.db.models import F, Sum
 
 # Reuse the same DAB base classes / fallbacks as the tasks app.
 try:
-    from ansible_base.activitystream.models import AuditableModel
     from ansible_base.lib.abstract_models import CommonModel
 except ImportError:  # pragma: no cover - simple fallback for setups without DAB
 
@@ -16,17 +15,13 @@ except ImportError:  # pragma: no cover - simple fallback for setups without DAB
         class Meta:
             abstract = True
 
-    class AuditableModel(models.Model):
-        class Meta:
-            abstract = True
-
 
 # Default origin for a local install.
 LOCAL_SOURCE = "local"
 HTTP_STATUS_CLASSES = (1, 2, 3, 4, 5)
 
 
-class AnalyticsPayload(CommonModel, AuditableModel):
+class AnalyticsPayload(CommonModel):
     """Raw pre-``prepare()`` collector payload for the analytics API.
 
     Every successful collection is retained, including repeated or unbounded windows. The

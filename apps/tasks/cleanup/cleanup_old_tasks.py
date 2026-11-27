@@ -13,6 +13,8 @@ from typing import Any
 from django.db.models import Q
 from django.utils import timezone
 
+from apps.core.db_utils import delete_queryset_in_batches, resolve_batch_size
+
 from ..utils import create_task_result, log_task_execution
 
 logger = logging.getLogger(__name__)
@@ -39,6 +41,7 @@ def cleanup_old_tasks(**kwargs) -> dict[str, Any]:
             - dry_run (bool): If True, only count tasks that would be deleted (default: False)
             - include_executions (bool): Also cleanup related TaskExecution records (default: True)
             - preserve_recurring (bool): If True, exclude recurring tasks from cleanup (default: True)
+            - batch_size (int): Maximum rows deleted per statement (default: 1000)
 
     Returns:
         dict: Task result dictionary with cleanup statistics
@@ -50,6 +53,7 @@ def cleanup_old_tasks(**kwargs) -> dict[str, Any]:
     dry_run = kwargs.get("dry_run", False)
     include_executions = kwargs.get("include_executions", True)
     preserve_recurring = kwargs.get("preserve_recurring", True)
+    batch_size = resolve_batch_size(kwargs.get("batch_size"))
 
     log_task_execution("cleanup_old_tasks", "processing", f"Cleaning up tasks older than {days_old} days")
 
@@ -100,17 +104,19 @@ def cleanup_old_tasks(**kwargs) -> dict[str, Any]:
         log_task_execution("cleanup_old_tasks", "processing", f"Deleting {task_count} old tasks")
 
         if include_executions:
-            # Delete executions first (foreign key constraint)
-            _, deletion_info = TaskExecution.objects.filter(task__in=old_tasks).delete()
-            deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
+            # Delete executions first (foreign key constraint), in bounded batches.
+            execution_info = delete_queryset_in_batches(
+                TaskExecution.objects.filter(task__in=old_tasks), batch_size=batch_size
+            )
+            deleted_executions = execution_info.get("tasks.TaskExecution", 0)
 
-        # Delete the tasks
-        _, deletion_info = old_tasks.delete()
-        deleted_tasks = deletion_info.get("tasks.Task", 0)
+        # Delete the tasks in bounded batches; cascaded executions are counted per batch.
+        task_info = delete_queryset_in_batches(old_tasks, batch_size=batch_size)
+        deleted_tasks = task_info.get("tasks.Task", 0)
 
         # If we didn't manually delete executions, they were cascade deleted
         if not include_executions:
-            deleted_executions = deletion_info.get("tasks.TaskExecution", 0)
+            deleted_executions = task_info.get("tasks.TaskExecution", 0)
 
         message = f"Deleted {deleted_tasks} tasks and {deleted_executions} executions"
         if preserve_recurring:

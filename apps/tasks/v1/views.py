@@ -53,6 +53,22 @@ from .serializers import (
     TaskSerializer,
 )
 
+DEFAULT_TASK_LIST_LIMIT = 20
+MAX_TASK_LIST_LIMIT = 500
+
+
+def _parse_task_list_limit(raw_limit: Any) -> int | None:
+    """Return the clamped task-list limit, or ``None`` when it is not a positive integer."""
+    if isinstance(raw_limit, bool):
+        return None
+    try:
+        limit = int(raw_limit)
+    except (TypeError, ValueError):
+        return None
+    if limit < 1:
+        return None
+    return min(limit, MAX_TASK_LIST_LIMIT)
+
 
 @extend_schema_view(
     list=extend_schema(
@@ -143,7 +159,7 @@ class TaskViewSet(BaseViewSet):
             ),
             OpenApiParameter(
                 name="limit",
-                description="Limit the number of tasks returned (default 20)",
+                description=f"Limit the number of tasks returned (default {DEFAULT_TASK_LIST_LIMIT}, max {MAX_TASK_LIST_LIMIT})",
                 required=False,
                 type=OpenApiTypes.INT,
             ),
@@ -168,8 +184,14 @@ class TaskViewSet(BaseViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
 
-        # Apply limit (default 20)
-        limit = int(request.query_params.get("limit", 20))
+        # Apply limit (default 20, capped) after validating the query parameter.
+        raw_limit = request.query_params.get("limit", DEFAULT_TASK_LIST_LIMIT)
+        limit = _parse_task_list_limit(raw_limit)
+        if limit is None:
+            error_response = build_error_response(
+                f"Invalid limit value: {raw_limit!r}; limit must be a positive integer", status_code=400
+            )
+            return Response(error_response, status=status.HTTP_400_BAD_REQUEST)
         queryset = queryset.order_by("-id")[:limit]
 
         serializer = self.get_serializer(queryset, many=True)

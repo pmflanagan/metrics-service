@@ -251,6 +251,61 @@ class TestSendAnonymizedToSegmentTask:
 
 
 @pytest.mark.unit
+class TestSendToSegmentDataSize:
+    """Tests for skipping payload re-serialization when the size is pre-computed."""
+
+    @patch("apps.tasks.collectors.send_anonymized_to_segment.json_size_bytes")
+    @patch("metrics_utility.library.storage.segment.StorageSegment")
+    @patch("metrics_utility.library.storage.segment.SEGMENT_AVAILABLE", True)
+    def test_supplied_data_size_skips_serialization(self, mock_storage_class, mock_json_size, settings):
+        """A caller-provided size is used as-is and the payload is never serialized."""
+        settings.SEGMENT_WRITE_KEY = "test-key"
+        mock_storage_class.return_value.put.return_value = [{"chunk": 1}]
+
+        result = send_to_segment("user-123", "test_event", {"data": "test"}, data_size_bytes=42)
+
+        mock_json_size.assert_not_called()
+        assert result["status"] == "success"
+        assert result["data_size_bytes"] == 42
+
+    @patch("apps.tasks.collectors.send_anonymized_to_segment.json_size_bytes", return_value=7)
+    @patch("metrics_utility.library.storage.segment.StorageSegment")
+    @patch("metrics_utility.library.storage.segment.SEGMENT_AVAILABLE", True)
+    def test_omitted_data_size_serializes_payload(self, mock_storage_class, mock_json_size, settings):
+        """Without a pre-computed size the payload is measured as before."""
+        settings.SEGMENT_WRITE_KEY = "test-key"
+        mock_storage_class.return_value.put.return_value = [{"chunk": 1}]
+
+        result = send_to_segment("user-123", "test_event", {"data": "test"})
+
+        mock_json_size.assert_called_once_with({"data": "test"})
+        assert result["data_size_bytes"] == 7
+
+    @patch("apps.tasks.collectors.send_anonymized_to_segment.send_to_segment")
+    def test_process_single_payload_passes_precomputed_size(self, mock_send_to_segment, settings):
+        """_process_single_payload forwards the stored payload size to send_to_segment."""
+        settings.SEGMENT_TEST_MODE = False
+        mock_send_to_segment.return_value = {"status": "success", "data": {}}
+
+        payload = MagicMock()
+        payload.id = 1
+        payload.status = "pending"
+        payload.segment_user_id = "test-user-id"
+        payload.segment_event_name = "My Event"
+        payload.anonymized_data = {"test": "data"}
+        payload.payload_size_bytes = 1234
+        payload.daily_summary = None
+        payload.can_retry.return_value = True
+        results = {"sent": 0, "failed": 0, "skipped": 0, "recovered": 0}
+
+        _process_single_payload(payload, results)
+
+        _, call_kwargs = mock_send_to_segment.call_args
+        assert call_kwargs["data_size_bytes"] == 1234
+        assert results["sent"] == 1
+
+
+@pytest.mark.unit
 class TestSendToSegmentStructured:
     """Tests for send_to_segment structured error handling."""
 

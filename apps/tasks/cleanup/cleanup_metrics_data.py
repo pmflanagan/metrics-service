@@ -16,15 +16,22 @@ from typing import Any
 from django.db.models import QuerySet
 from django.utils import timezone
 
+from apps.core.db_utils import DEFAULT_DELETE_BATCH_SIZE, delete_queryset_in_batches
+
 from ..retention import get_controller_retention_days
 from ..utils import create_task_result, ignore_database_override, log_task_execution
 
 logger = logging.getLogger(__name__)
 
 
-def _delete_old_rows(queryset: QuerySet, dry_run: bool, label: str | None = None) -> dict[str, int]:
+def _delete_old_rows(
+    queryset: QuerySet,
+    dry_run: bool,
+    label: str | None = None,
+    batch_size: int = DEFAULT_DELETE_BATCH_SIZE,
+) -> dict[str, int]:
     """
-    Count rows in a cleanup queryset and delete them unless dry_run.
+    Count rows in a cleanup queryset and delete them in PK batches unless dry_run.
 
     Returns a ``{"found", "deleted"}`` stats dict. When ``label`` names a model
     (``app_label.ModelName``), ``deleted`` counts only that model's rows from
@@ -33,8 +40,8 @@ def _delete_old_rows(queryset: QuerySet, dry_run: bool, label: str | None = None
     found = queryset.count()
     if dry_run or found == 0:
         return {"found": found, "deleted": 0}
-    deleted_total, deletion_info = queryset.delete()
-    deleted = deletion_info.get(label, 0) if label else deleted_total
+    deletion_info = delete_queryset_in_batches(queryset, batch_size=batch_size)
+    deleted = deletion_info.get(label, 0) if label else sum(deletion_info.values())
     return {"found": found, "deleted": deleted}
 
 

@@ -348,6 +348,52 @@ def test_cleanup_metrics_data_rejects_non_positive_analytics_override():
     assert "analytics_retention_days must be > 0" in result["error"]
 
 
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_delete_old_rows_deletes_across_multiple_batches():
+    """_delete_old_rows deletes every matching row when the queryset spans several batches."""
+    from apps.tasks.cleanup.cleanup_metrics_data import _delete_old_rows
+    from apps.tasks.models import HourlyMetricsCollection
+
+    cutoff = timezone.now() - timedelta(days=7)
+    for i in range(5):
+        HourlyMetricsCollection.objects.create(
+            collector_type="unified_jobs",
+            collection_timestamp=(cutoff - timedelta(days=1, hours=i)).replace(minute=0, second=0, microsecond=0),
+            raw_data={},
+            status="collected",
+        )
+
+    queryset = HourlyMetricsCollection.objects.filter(collection_timestamp__lt=cutoff)
+    stats = _delete_old_rows(queryset, dry_run=False, batch_size=2)
+
+    assert stats == {"found": 5, "deleted": 5}
+    assert not queryset.exists()
+
+
+@pytest.mark.unit
+@pytest.mark.django_db
+def test_delete_old_rows_batches_count_only_labelled_model():
+    """A label keeps cascade deletions out of the reported count across batches."""
+    from apps.tasks.cleanup.cleanup_metrics_data import _delete_old_rows
+    from apps.tasks.models import AnonymizedMetricsPayload, DailyMetricsSummary
+
+    old_date = timezone.now().date() - timedelta(days=35)
+    for i in range(5):
+        summary = DailyMetricsSummary.objects.create(summary_date=old_date - timedelta(days=i))
+        AnonymizedMetricsPayload.objects.create(
+            summary_date=old_date - timedelta(days=i),
+            anonymized_data={"data": "x"},
+            status="sent",
+        )
+
+    queryset = DailyMetricsSummary.objects.filter(summary_date__lt=timezone.now().date() - timedelta(days=30))
+    stats = _delete_old_rows(queryset, dry_run=False, label="tasks.DailyMetricsSummary", batch_size=2)
+
+    assert stats == {"found": 5, "deleted": 5}
+    assert not DailyMetricsSummary.objects.filter(pk=summary.pk).exists()
+
+
 # ---------------------------------------------------------------------------
 # cleanup_activitystream
 # ---------------------------------------------------------------------------

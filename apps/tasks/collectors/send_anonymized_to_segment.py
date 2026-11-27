@@ -168,6 +168,7 @@ def _process_single_payload(payload, results: dict) -> None:
                 "timestamp": payload.created,
                 "message_id": message_id,
             },
+            data_size_bytes=payload.payload_size_bytes,
         )
 
         if segment_result["status"] == "success":
@@ -183,7 +184,14 @@ def _process_single_payload(payload, results: dict) -> None:
         _handle_failed_send(payload, error_result, results)
 
 
-def send_to_segment(user_id: str, event_name: str, segment_data: dict, segment_meta: dict = None) -> dict:
+def send_to_segment(
+    user_id: str,
+    event_name: str,
+    segment_data: dict,
+    segment_meta: dict = None,
+    *,
+    data_size_bytes: int | None = None,
+) -> dict:
     """
     Send data to Segment.com using metrics-utility StorageSegment.
 
@@ -191,6 +199,9 @@ def send_to_segment(user_id: str, event_name: str, segment_data: dict, segment_m
         user_id: User ID for Segment tracking
         event_name: Event name for tracking
         segment_data: Dictionary of data to send
+        segment_meta: Optional Segment message metadata
+        data_size_bytes: Pre-computed serialized size of ``segment_data``. When omitted,
+            the payload is serialized to measure it.
 
     Returns:
         dict: Task result with status, error_category, and error_detail
@@ -213,8 +224,8 @@ def send_to_segment(user_id: str, event_name: str, segment_data: dict, segment_m
             logger.warning("SEGMENT_WRITE_KEY not configured in settings")
             return create_task_result("unavailable", error="SEGMENT_WRITE_KEY not configured in settings")
 
-        # Calculate data size for logging
-        data_size = json_size_bytes(segment_data)
+        # Calculate data size for logging, unless the caller already knows it.
+        data_size = data_size_bytes if data_size_bytes is not None else json_size_bytes(segment_data)
 
         log_task_execution(
             "segment_send",

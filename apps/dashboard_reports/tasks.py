@@ -26,6 +26,7 @@ from django.db.models import Case, CharField, QuerySet, Value, When
 from metrics_utility.library.collectors.controller import unified_jobs_dashboard
 from metrics_utility.library.collectors.dashboard.queries import get_job_host_summaries_for_ids_query
 
+from apps.core.db_utils import delete_queryset_in_batches, resolve_batch_size
 from apps.dashboard_reports.awx_queries import fetch_job_types_for_ids, fetch_organizations, fetch_retention_settings
 from apps.dashboard_reports.job_definition import prepare_dashboard_records, select_dashboard_jobs
 from apps.dashboard_reports.models import DashboardTelemetry, JobData, JobHostSummary, TemplateMetadata
@@ -1231,10 +1232,14 @@ def cleanup_dashboard_reports_old_data(**kwargs) -> dict[str, Any]:
     to ``DEFAULT_RETENTION_DAYS`` when the AWX DB is unreachable or no active schedules exist.
     The caller may override this default by passing ``retention_days`` in kwargs.
 
+    Rows are deleted in primary-key batches (``batch_size`` kwarg, default 1000) so the cleanup
+    never holds a table-wide lock or loads every matching row into memory.
+
     Returns a task result dict with the number of deleted records, cutoff date, and any error details.
     """
     task_name = "cleanup_dashboard_reports_old_data"
     ignore_database_override(task_name, kwargs)
+    batch_size = resolve_batch_size(kwargs.get("batch_size"))
     retention_days = _get_renamed_kwarg(kwargs, "retention_days", "retention_period_days", task_name)
     if retention_days is _MISSING:
         retention_days = get_retention_days() if _use_controller_retention() else DEFAULT_RETENTION_DAYS
@@ -1260,7 +1265,7 @@ def cleanup_dashboard_reports_old_data(**kwargs) -> dict[str, Any]:
         # Count JobData rows before deletion — delete() returns the total across all
         # cascaded models (JobLabel, JobHostSummary, etc.) which inflates the count.
         jobdata_count = queryset.count()
-        queryset.delete()
+        delete_queryset_in_batches(queryset, batch_size=batch_size)
         duration_db_ms = (time.monotonic() - start_db_time) * 1000
         log_task_execution(
             task_name=task_name,

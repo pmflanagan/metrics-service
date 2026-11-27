@@ -181,12 +181,12 @@ class TestCleanupTelemetry:
         """When the delete call raises, _save_telemetry_details is still called with success=False."""
         with (
             patch("apps.dashboard_reports.tasks.JobData") as mock_jobdata,
+            patch("apps.dashboard_reports.tasks.delete_queryset_in_batches", side_effect=Exception("db error")),
             patch("apps.dashboard_reports.tasks.log_task_execution"),
             patch("apps.dashboard_reports.tasks.create_task_result"),
             patch("apps.dashboard_reports.tasks._save_telemetry_details") as mock_telemetry,
         ):
             mock_jobdata.objects.filter.return_value.count.return_value = 3
-            mock_jobdata.objects.filter.return_value.delete.side_effect = Exception("db error")
 
             from apps.dashboard_reports.tasks import cleanup_dashboard_reports_old_data
 

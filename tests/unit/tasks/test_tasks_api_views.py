@@ -470,6 +470,32 @@ class TestTaskViewSet(APITestCase):
         # Response should be limited (even if no tasks, check it doesn't error)
         assert isinstance(response.data, list)
 
+    def test_list_filtered_caps_limit_at_maximum(self):
+        """A limit above the maximum is clamped instead of returning unbounded rows."""
+        from unittest.mock import patch
+
+        self.client.force_authenticate(user=self.user)
+        for i in range(3):
+            _create_task_safely(name=f"Capped Task {i}", function_name="hello_world", created_by=self.user)
+
+        url = reverse("tasks:v1:task-list-filtered")
+        with patch("apps.tasks.v1.views.MAX_TASK_LIST_LIMIT", 2):
+            response = self.client.get(url, {"limit": 3})
+
+        assert response.status_code == status.HTTP_200_OK
+        assert len(response.data) == 2
+
+    def test_list_filtered_rejects_invalid_limit(self):
+        """Non-integer, zero, and negative limits return a 400 error response."""
+        self.client.force_authenticate(user=self.user)
+        url = reverse("tasks:v1:task-list-filtered")
+
+        for bad_limit in ("abc", "-1", "0", "1.5"):
+            with self.subTest(limit=bad_limit):
+                response = self.client.get(url, {"limit": bad_limit})
+                assert response.status_code == status.HTTP_400_BAD_REQUEST
+                assert "Invalid limit value" in response.data["error"]
+
     # Custom Action Tests - Additional Coverage
     def test_available_functions_sorted_by_category_and_name(self):
         """Test available_functions are sorted by category then name."""

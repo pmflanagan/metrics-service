@@ -255,7 +255,7 @@ def test_process_single_payload_test_mode_appends_suffix(payload):
     results = {"sent": 0, "failed": 0, "skipped": 0, "recovered": 0}
     captured = {}
 
-    def fake_send(user_id, event_name, segment_data, segment_meta=None):
+    def fake_send(user_id, event_name, segment_data, segment_meta=None, **kwargs):
         captured["event_name"] = event_name
         return {"status": "success"}
 

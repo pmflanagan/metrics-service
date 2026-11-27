@@ -211,9 +211,52 @@ class TestCleanupOldTasks:
         assert not Task.objects.filter(id=per_run_task.id).exists()
         assert not Task.objects.filter(id=regular_task.id).exists()
 
+    def test_deletes_tasks_across_multiple_batches(self, user):
+        """Tasks are deleted in PK batches when batch_size is smaller than the row count."""
+        from apps.tasks.models import Task
+
+        old_time = timezone.now() - timedelta(days=100)
+        task_ids = [
+            Task.objects.create(
+                name=f"batched_task_{i}",
+                function_name="hello_world",
+                task_data={},
+                created_by=user,
+                status="completed",
+                completed_at=old_time,
+            ).id
+            for i in range(5)
+        ]
+
+        result = cleanup_old_tasks(days_old=30, dry_run=False, batch_size=2)
+
+        assert result["tasks_deleted"] == 5
+        assert not Task.objects.filter(id__in=task_ids).exists()
+
+    def test_cascade_executions_counted_across_batches(self, user):
+        """Cascade-deleted executions are summed over every task batch."""
+        from apps.tasks.models import Task, TaskExecution
+
+        old_time = timezone.now() - timedelta(days=100)
+        for i in range(5):
+            task = Task.objects.create(
+                name=f"batched_exec_task_{i}",
+                function_name="hello_world",
+                task_data={},
+                created_by=user,
+                status="completed",
+                completed_at=old_time,
+            )
+            TaskExecution.objects.create(task=task, status="completed")
+
+        result = cleanup_old_tasks(days_old=30, dry_run=False, include_executions=False, batch_size=2)
+
+        assert result["tasks_deleted"] == 5
+        assert result["executions_deleted"] == 5
+        assert not TaskExecution.objects.exists()
+
     def test_uses_completed_at_when_available(self, user):
         """Test uses completed_at field when available."""
-        # Arrange
         from apps.tasks.models import Task
 
         # Create task with completed_at older than cutoff

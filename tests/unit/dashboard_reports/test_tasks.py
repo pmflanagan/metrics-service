@@ -624,10 +624,12 @@ class TestCleanupDashboardReportsOldData:
         assert args[0] == "success"
         assert kwargs["data"]["deleted_records"] == 0
 
-    def test_cleanup_exception(self, mock_jobdata_objects, mock_log_task_execution, mock_create_task_result_cleanup):
+    @patch("apps.dashboard_reports.tasks.delete_queryset_in_batches", side_effect=Exception("db error"))
+    def test_cleanup_exception(
+        self, mock_delete_batches, mock_jobdata_objects, mock_log_task_execution, mock_create_task_result_cleanup
+    ):
         """Returns an error result when the delete call raises."""
         mock_jobdata_objects.objects.filter.return_value.count.return_value = 3
-        mock_jobdata_objects.objects.filter.return_value.delete.side_effect = Exception("db error")
         cleanup_dashboard_reports_old_data()
         args, kwargs = mock_create_task_result_cleanup.call_args
         assert args[0] == "error"
@@ -775,6 +777,30 @@ class TestCleanupDashboardReportsOldData:
         assert old_job2.id not in remaining_ids
         assert new_job1.id in remaining_ids
         assert new_job2.id in remaining_ids
+
+    @pytest.mark.integration
+    @pytest.mark.django_db
+    def test_cleanup_with_db_data_across_batches(self, db):
+        """All old JobData rows are deleted when they span several delete batches."""
+        cutoff = datetime.now().astimezone(UTC) - timedelta(days=90)
+        old_jobs = [
+            JobData.objects.create(
+                job_id=2000 + i,
+                finished=cutoff - timedelta(days=1, hours=i),
+                status="successful",
+                elapsed=1.0,
+            )
+            for i in range(5)
+        ]
+        new_job = JobData.objects.create(
+            job_id=2100, finished=cutoff + timedelta(days=1), status="successful", elapsed=1.0
+        )
+
+        result = cleanup_dashboard_reports_old_data(retention_days=90, batch_size=2)
+
+        assert result["deleted_records"] == 5
+        assert not JobData.objects.filter(id__in=[job.id for job in old_jobs]).exists()
+        assert JobData.objects.filter(id=new_job.id).exists()
 
 
 # ---------------------------------------------------------------------------

@@ -6788,7 +6788,7 @@ paths:
         name: limit
         schema:
           type: integer
-        description: Limit the number of tasks returned (default 20)
+        description: Limit the number of tasks returned (default 20, max 500)
       - in: query
         name: max_attempts
         schema:

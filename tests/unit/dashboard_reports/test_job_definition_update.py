@@ -418,8 +418,8 @@ class TestConcurrentPageStorage:
         original = JobData.create_or_update_from_awx
         local = threading.local()
 
-        def meet_after_first_job(job):
-            original(job)
+        def meet_after_first_job(job, **kwargs):
+            original(job, **kwargs)
             if not getattr(local, "met", False):
                 local.met = True
                 barrier.wait()

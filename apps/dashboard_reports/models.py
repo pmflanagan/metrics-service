@@ -9,7 +9,7 @@ with related JobLabel and JobHostSummary for storing AWX job execution records.
 import calendar
 import decimal
 import logging
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime
 from typing import Any, Self
 
@@ -351,12 +351,25 @@ class TemplateMetadata(CommonModel):
         return min_id - 1 if min_id is not None and min_id < 0 else -1
 
     @classmethod
-    def get_by_awx_id_or_name(cls, name: str, awx_id: int | None = None, elapsed: decimal.Decimal | None = None):
+    def get_by_awx_id_or_name(
+        cls,
+        name: str,
+        awx_id: int | None = None,
+        elapsed: decimal.Decimal | None = None,
+        cache: Mapping[int, "TemplateMetadata"] | None = None,
+    ):
         """
         Retrieves TemplateMetadata by AWX ID or name. If not found, creates a new instance.
         Sets default manual and automation time estimates if not present.
+
+        ``cache`` is an optional read-only AWX template ID → TemplateMetadata mapping. Cache hits skip
+        the database lookup; misses fall through to the normal lookup/create path and leave ``cache``
+        untouched. The cache must stay read-only because this runs inside per-job savepoints: a
+        rolled-back savepoint would otherwise leave a ghost row in the cache for later jobs.
         """
-        instance = cls._lookup_by_id(awx_id) or cls._lookup_or_create_by_name(name, awx_id)
+        instance = cache.get(awx_id) if cache is not None and awx_id is not None else None
+        if instance is None:
+            instance = cls._lookup_by_id(awx_id) or cls._lookup_or_create_by_name(name, awx_id)
 
         update_fields = cls._apply_time_estimate_defaults(instance, elapsed)
         if update_fields:
@@ -706,13 +719,27 @@ class JobData(CommonModel):
 
     @classmethod
     @transaction.atomic
-    def create_or_update_from_awx(cls, awx_job: AWXJobType):
+    def create_or_update_from_awx(
+        cls,
+        awx_job: AWXJobType,
+        template_cache: dict | None = None,
+        existing_labels_by_job_id: dict | None = None,
+        existing_summaries_by_job_id: dict | None = None,
+    ):
         """
         Creates or updates a JobData instance from AWX job, label, and host summary data.
         Updates related JobLabel and JobHostSummary records atomically.
+
+        The optional prefetch maps let a batch caller supply TemplateMetadata, JobLabel, and
+        JobHostSummary rows up front so that each job does not issue its own lookup queries.
+        Prefetched relationship maps are popped per job, so a repeated ``job_id`` in the same batch
+        falls back to a database query instead of reusing a map that was already consumed.
         """
         template_metadata = TemplateMetadata.get_by_awx_id_or_name(
-            name=awx_job["name"], awx_id=awx_job["unified_job_template_id"], elapsed=awx_job["elapsed"]
+            name=awx_job["name"],
+            awx_id=awx_job["unified_job_template_id"],
+            elapsed=awx_job["elapsed"],
+            cache=template_cache,
         )
         # None signals "column was not available in collected data — preserve existing labels".
         # [] signals "job currently has no labels in AWX — remove any stale records".
@@ -748,15 +775,23 @@ class JobData(CommonModel):
             job_id=awx_job["id"],
             defaults=defaults,
         )
-        logger.info(f"{'Created' if created else 'Updated'} JobData {job_data}")
+        logger.debug(f"{'Created' if created else 'Updated'} JobData {job_data}")
 
         if labels is not None:
-            existing_labels = {} if created else {o.label_id: o for o in JobLabel.objects.filter(job_data=job_data)}
+            if created:
+                existing_labels = {}
+            elif existing_labels_by_job_id is not None and job_data.job_id in existing_labels_by_job_id:
+                existing_labels = existing_labels_by_job_id.pop(job_data.job_id)
+            else:
+                existing_labels = {o.label_id: o for o in JobLabel.objects.filter(job_data=job_data)}
             cls._sync_labels(job_data, labels, existing_labels)
         if host_summaries is not None:
-            existing_summaries = (
-                {} if created else {o.host_summary_id: o for o in JobHostSummary.objects.filter(job_data=job_data)}
-            )
+            if created:
+                existing_summaries = {}
+            elif existing_summaries_by_job_id is not None and job_data.job_id in existing_summaries_by_job_id:
+                existing_summaries = existing_summaries_by_job_id.pop(job_data.job_id)
+            else:
+                existing_summaries = {o.host_summary_id: o for o in JobHostSummary.objects.filter(job_data=job_data)}
             cls._sync_host_summaries(job_data, host_summaries, existing_summaries)
 
     @classmethod
@@ -767,10 +802,10 @@ class JobData(CommonModel):
         ]
         if to_create:
             JobLabel.objects.bulk_create(to_create)
-            logger.info(f"Created {len(to_create)} new JobLabel records for JobData {job_data}")
+            logger.debug(f"Created {len(to_create)} new JobLabel records for JobData {job_data}")
         if existing:
             JobLabel.objects.filter(pk__in=[o.pk for o in existing.values()]).delete()
-            logger.info(f"Deleted {len(existing)} stale JobLabel records for JobData {job_data}")
+            logger.debug(f"Deleted {len(existing)} stale JobLabel records for JobData {job_data}")
 
     @classmethod
     def _sync_host_summaries(cls, job_data: "JobData", awx_host_summaries: list, existing: dict) -> None:
@@ -795,13 +830,13 @@ class JobData(CommonModel):
         if to_update:
             # batch_size=500 prevents excessively large SQL statements for jobs with many hosts
             JobHostSummary.objects.bulk_update(to_update, ["host_id", "host_name"], batch_size=500)
-            logger.info(f"Updated {len(to_update)} JobHostSummary records for JobData {job_data}")
+            logger.debug(f"Updated {len(to_update)} JobHostSummary records for JobData {job_data}")
         if to_create:
             JobHostSummary.objects.bulk_create(to_create)
-            logger.info(f"Created {len(to_create)} new JobHostSummary records for JobData {job_data}")
+            logger.debug(f"Created {len(to_create)} new JobHostSummary records for JobData {job_data}")
         if existing:
             JobHostSummary.objects.filter(pk__in=[o.pk for o in existing.values()]).delete()
-            logger.info(f"Deleted {len(existing)} stale JobHostSummary records for JobData {job_data}")
+            logger.debug(f"Deleted {len(existing)} stale JobHostSummary records for JobData {job_data}")
 
 
 class JobLabel(CommonModel):

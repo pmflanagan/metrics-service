@@ -28,7 +28,7 @@ from metrics_utility.library.collectors.dashboard.queries import get_job_host_su
 
 from apps.dashboard_reports.awx_queries import fetch_job_types_for_ids, fetch_organizations, fetch_retention_settings
 from apps.dashboard_reports.job_definition import prepare_dashboard_records, select_dashboard_jobs
-from apps.dashboard_reports.models import DashboardTelemetry, JobData, JobHostSummary, TemplateMetadata
+from apps.dashboard_reports.models import DashboardTelemetry, JobData, JobHostSummary, JobLabel, TemplateMetadata
 from apps.tasks.retention import DEFAULT_RETENTION_DAYS, _parse_dt, resolve_retention_days
 from apps.tasks.utils import create_task_result, get_db_connection, ignore_database_override, log_task_execution
 
@@ -215,6 +215,41 @@ def _ensure_template_metadata(job_results: list) -> None:
             logger.exception("Could not pre-create TemplateMetadata for '%s'", name)
 
 
+def _prefetch_sync_caches(job_results: list) -> tuple[dict, dict | None, dict | None]:
+    """
+    Prefetch the TemplateMetadata, JobLabel, and JobHostSummary rows needed by a batch.
+
+    Returns ``(template_cache, existing_labels_by_job_id, existing_summaries_by_job_id)``.
+    The relationship maps are ``None`` when no job in the batch syncs labels or host summaries,
+    so callers keep the original per-job query behaviour. For jobs that do exist, the maps contain
+    an (possibly empty) entry per ``job_id`` so the per-job sync never falls back to the database.
+    """
+    template_ids = {
+        job.get("unified_job_template_id") for job in job_results if job.get("unified_job_template_id") is not None
+    }
+    template_cache = TemplateMetadata.objects.in_bulk(template_ids, field_name="template_id") if template_ids else {}
+
+    job_ids = {
+        job["id"]
+        for job in job_results
+        if "id" in job and (job.get("labels") is not None or job.get("host_summaries") is not None)
+    }
+    if not job_ids:
+        return template_cache, None, None
+
+    pk_by_job_id = dict(JobData.objects.filter(job_id__in=job_ids).values_list("job_id", "id"))
+    existing_labels: dict[int, dict] = {job_id: {} for job_id in pk_by_job_id}
+    existing_summaries: dict[int, dict] = {job_id: {} for job_id in pk_by_job_id}
+    if pk_by_job_id:
+        job_id_by_pk = {pk: job_id for job_id, pk in pk_by_job_id.items()}
+        job_pks = list(job_id_by_pk)
+        for label in JobLabel.objects.filter(job_data_id__in=job_pks):
+            existing_labels[job_id_by_pk[label.job_data_id]][label.label_id] = label
+        for summary in JobHostSummary.objects.filter(job_data_id__in=job_pks):
+            existing_summaries[job_id_by_pk[summary.job_data_id]][summary.host_summary_id] = summary
+    return template_cache, existing_labels, existing_summaries
+
+
 def _sync_jobs_atomically(job_results: list) -> list:
     """
     Persist all jobs in a single atomic transaction.
@@ -233,9 +268,15 @@ def _sync_jobs_atomically(job_results: list) -> list:
     _ensure_template_metadata(job_results)
     try:
         with transaction.atomic():
+            template_cache, labels_by_job_id, summaries_by_job_id = _prefetch_sync_caches(job_results)
             for job in job_results:
                 try:
-                    JobData.create_or_update_from_awx(job)
+                    JobData.create_or_update_from_awx(
+                        job,
+                        template_cache=template_cache,
+                        existing_labels_by_job_id=labels_by_job_id,
+                        existing_summaries_by_job_id=summaries_by_job_id,
+                    )
                 except Exception as e:
                     logger.exception(f"Error creating/updating JobData for job {job['id']}: {str(e)}")
                     failed_jobs.append(job["id"])
@@ -243,6 +284,14 @@ def _sync_jobs_atomically(job_results: list) -> list:
                 raise _PartialSyncRollbackError()
     except _PartialSyncRollbackError:
         pass  # transaction rolled back; caller inspects failed_jobs
+    if failed_jobs:
+        logger.info(
+            "Dashboard batch sync rolled back: %s of %s job(s) failed; no jobs were stored",
+            len(failed_jobs),
+            len(job_results),
+        )
+    else:
+        logger.info("Dashboard batch sync complete: %s job(s) synced", len(job_results))
     return failed_jobs
 
 
